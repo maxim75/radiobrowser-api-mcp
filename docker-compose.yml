@@ -1,0 +1,11 @@
+services:
+  radiobrowser-api-mcp:
+    build: .
+    image: radiobrowser-api-mcp:latest
+    container_name: radiobrowser-api-mcp
+    restart: unless-stopped
+    ports:
+      - "${GRPC_PORT:-50051}:50051"
+    environment:
+      # No secrets or config required; kept for Coolify overrides.
+      GRPC_PORT: ${GRPC_PORT:-50051}

@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package radiomcp;
+
+// Generic bridge over every MCP tool registered in server.py.
+// Arguments and results travel as JSON strings so the contract stays stable
+// no matter how tools are added or re-shaped (schemas are self-describing
+// via ListTools).
+service RadioMcpService {
+  // Call any tool by name; `arguments_json` is the JSON object of tool args.
+  rpc CallTool(CallToolRequest) returns (CallToolResponse);
+  // Enumerate tools with their JSON schemas (name, description, input_schema).
+  rpc ListTools(ListToolsRequest) returns (ListToolsResponse);
+}
+
+message CallToolRequest {
+  string name = 1;
+  string arguments_json = 2; // e.g. {"station_name": "Smooth FM Sydney"}
+}
+
+message CallToolResponse {
+  bool ok = 1;
+  string result_json = 2;    // tool result (MCP content blocks as JSON)
+  string error = 3;          // set when ok == false
+}
+
+message ListToolsRequest {}
+
+message ListToolsResponse {
+  string tools_json = 1;     // [{name, description, input_schema}, ...]
+}
