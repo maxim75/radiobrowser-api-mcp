@@ -18,7 +18,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          ".venv/bin/python -c \"import sys,urllib.request,urllib.error;\\ntry:\\n    urllib.request.urlopen('http://127.0.0.1:8000/mcp',timeout=5)\\nexcept urllib.error.HTTPError as e:\\n    sys.exit(0 if e.code in (400,404,405,406) else 1)\"",
+          ".venv/bin/python -c \"import sys,urllib.request,urllib.error;\\ntry:\\n    urllib.request.urlopen('http://127.0.0.1:50052/mcp',timeout=5)\\nexcept urllib.error.HTTPError as e:\\n    sys.exit(0 if e.code in (400,404,405,406) else 1)\"",
         ]
       interval: 30s
       timeout: 10s
