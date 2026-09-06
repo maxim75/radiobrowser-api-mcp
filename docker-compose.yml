@@ -10,3 +10,11 @@ services:
       # Optional: Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
+    healthcheck:
+      # Same probe as the in-image HEALTHCHECK; explicit here so Coolify and
+      # `docker ps` report status even when built without the Dockerfile check.
+      test: ["CMD", ".venv/bin/python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3

@@ -53,6 +53,8 @@ uv run python -c "import asyncio, server; ..."  # smoke test via server.mcp.call
 
 - SDK wraps non-`ToolError` exceptions in `UnexpectedToolError` whose message is only `Error executing tool <name>`; detail survives in `__cause__`. Anticipated failures must raise `ToolError` (import under the v1/v2 shim). `grpc_server` unwraps `str(exc.__cause__ or exc)` for the same reason.
 - `get_now_playing` semantics: ranked curated fallback (>= 2 keyword overlap) + same-station loop gate (>= 2 `_station_tokens` overlap, parens stripped) + direct-streams-first sort (non-HLS scores higher under `reverse=True`). `test_server.py` pins all three — run `uv run pytest -q` and `uv run ruff check .` before pushing.
+- gRPC health: `grpc_server.build_server()` registers `grpc.health.v1` (SERVING for `""` + `radiomcp.RadioMcpService`); `healthcheck.py` probes it and is the Dockerfile `HEALTHCHECK` CMD. `test_grpc_server.py` covers the bridge incl. health — keep the fixture on `build_server` so wiring stays single-sourced.
+- Container runs as non-root `appuser` on `python:3.12-slim` (matches `.python-version`). `grpcio-health-checking` is a runtime dep; stubs regenerate unchanged.
 
 ## Client config gotcha (macOS GUI clients)
 

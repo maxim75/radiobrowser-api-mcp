@@ -99,6 +99,12 @@ docker compose up -d --build
 - Host port is configurable: `GRPC_PORT=50099 docker compose up -d` maps
   host `50099` → container `50051` (the in-container port is fixed).
   The host bind is loopback-only; Coolify overrides networking itself.
+- Health: the server registers the standard `grpc.health.v1` service and the
+  image runs `healthcheck.py` every 30s (`HEALTHCHECK` + compose
+  `healthcheck`, so Coolify shows status). Probe manually with
+  `uv run python healthcheck.py` (uses `HEALTHCHECK_PORT`, default 50051).
+- The container runs as non-root `appuser` on `python:3.12-slim`, matching
+  local dev (`.python-version`).
 - For remote/Coolify deployments, set `RADIO_MCP_AUTH_TOKEN` (Coolify env
   vars) so the mutating tools require a Bearer token (see gRPC auth above).
 - The image installs runtime deps only (`uv sync --frozen --no-dev`) and

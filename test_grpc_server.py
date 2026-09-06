@@ -10,26 +10,32 @@ Catches what server.py unit tests cannot:
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import time
 
 import grpc
 import pytest
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import radio_mcp_pb2 as pb2
 import radio_mcp_pb2_grpc as pb2_grpc
-from grpc_server import MAX_CALL_SECONDS, RadioMcpServicer
+from grpc_server import MAX_CALL_SECONDS, build_server
 
 
 @pytest.fixture(scope="module")
-def stub():
-    grpc_server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=8))
-    pb2_grpc.add_RadioMcpServiceServicer_to_server(RadioMcpServicer(), grpc_server)
+def server_and_stub():
+    grpc_server, _health = build_server("127.0.0.1", 0, max_workers=8)
     port = grpc_server.add_insecure_port("127.0.0.1:0")
     grpc_server.start()
-    yield pb2_grpc.RadioMcpServiceStub(grpc.insecure_channel(f"127.0.0.1:{port}"))
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    yield grpc_server, channel, pb2_grpc.RadioMcpServiceStub(channel)
+    channel.close()
     grpc_server.stop(grace=None)
+
+
+@pytest.fixture(scope="module")
+def stub(server_and_stub):
+    return server_and_stub[2]
 
 
 def test_call_tool_without_client_deadline(stub):
@@ -85,3 +91,26 @@ def test_call_timeout_honours_short_deadline():
             return 7.5
 
     assert _call_timeout(ShortDeadline()) == 7.5
+
+
+def test_health_service_reports_serving(server_and_stub):
+    _grpc_server, channel, _stub = server_and_stub
+    health_stub = health_pb2_grpc.HealthStub(channel)
+    for service in ("", "radiomcp.RadioMcpService"):
+        resp = health_stub.Check(
+            health_pb2.HealthCheckRequest(service=service), timeout=10
+        )
+        assert resp.status == 1  # SERVING
+
+
+def test_healthcheck_probe_script(server_and_stub, monkeypatch):
+    """healthcheck.py exits 0 against a live server (stdlib + grpcio only)."""
+    import runpy
+
+    _grpc_server, channel, _stub = server_and_stub
+    target = channel._channel.target().decode()
+    port = target.rsplit(":", 1)[1]
+    monkeypatch.setenv("HEALTHCHECK_PORT", port)
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path("healthcheck.py", run_name="__main__")
+    assert exc_info.value.code == 0
