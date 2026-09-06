@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     ports:
       - "50051:50051"
+      - "50052:50052"
     environment:
       # Optional: Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
