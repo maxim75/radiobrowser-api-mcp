@@ -14,6 +14,6 @@ RUN uv sync --frozen --no-dev
 # App sources (generated stubs included so the image builds without grpcio-tools)
 COPY server.py grpc_server.py radio_mcp.proto radio_mcp_pb2.py radio_mcp_pb2_grpc.py ./
 
-EXPOSE 50051
+EXPOSE 8000
 
-CMD [".venv/bin/python", "server.py", "--transport", "grpc", "--host", "0.0.0.0", "--port", "50051"]
+CMD [".venv/bin/python", "server.py", "--transport", "streamable-http", "--host", "0.0.0.0", "--http-port", "8000"]

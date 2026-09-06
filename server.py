@@ -930,22 +930,39 @@ def list_directory_servers(timeout: int = 15) -> list[dict]:
     return _api_get("json/servers", None, timeout)
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="radiobrowser-api-mcp server")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "grpc"],
+        choices=["stdio", "grpc", "streamable-http"],
         default="stdio",
-        help="stdio for local MCP clients, grpc for remote connections",
+        help="stdio for local MCP clients, grpc or streamable-http for remote connections",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="gRPC listen host")
+    parser.add_argument("--host", default="127.0.0.1", help="listen host")
     parser.add_argument("--port", type=int, default=50051, help="gRPC listen port")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--http-port", type=int, default=8000, help="Streamable HTTP listen port"
+    )
+    parser.add_argument(
+        "--path", default="/mcp", help="Streamable HTTP endpoint path"
+    )
+    args = parser.parse_args(argv)
     if args.transport == "grpc":
         from grpc_server import serve
 
         serve(args.host, args.port)
+    elif args.transport == "streamable-http":
+        mcp.run(
+            transport="streamable-http",
+            host=args.host,
+            port=args.http_port,
+            streamable_http_path=args.path,
+        )
     else:
         mcp.run()
+
+
+if __name__ == "__main__":
+    main()

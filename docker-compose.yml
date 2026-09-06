@@ -5,18 +5,19 @@ services:
     container_name: radiobrowser-api-mcp
     restart: unless-stopped
     ports:
-      - "50051:50051"
+      - "127.0.0.1:${HTTP_PORT:-8000}:8000"
     environment:
       # Optional: Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
     healthcheck:
-      # ListTools is in-process (no upstream Radio Browser dependency),
-      # so it proves the gRPC bridge is serving without flaky network.
+      # Streamable HTTP endpoint (Coolify-facing transport): a GET on /mcp
+      # answers 406 when the app is serving (406 = needs SSE accept header,
+      # but proves uvicorn + the MCP app are up).
       test:
         [
           "CMD-SHELL",
-          ".venv/bin/python -c \"import grpc, radio_mcp_pb2 as pb2, radio_mcp_pb2_grpc as p; p.RadioMcpServiceStub(grpc.insecure_channel('127.0.0.1:50051')).ListTools(pb2.ListToolsRequest(), timeout=5)\"",
+          ".venv/bin/python -c \"import sys,urllib.request,urllib.error;\\ntry:\\n    urllib.request.urlopen('http://127.0.0.1:8000/mcp',timeout=5)\\nexcept urllib.error.HTTPError as e:\\n    sys.exit(0 if e.code in (400,404,405,406) else 1)\"",
         ]
       interval: 30s
       timeout: 10s
