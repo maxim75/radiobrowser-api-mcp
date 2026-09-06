@@ -93,8 +93,14 @@ plain `docker-compose.yml`, so deployment is: new Resource → Docker Compose �
 point it at this repo.
 
 ```sh
+docker network create coolify   # one-time, local only (see note below)
 docker compose up -d --build
 ```
+
+The compose file joins the `coolify` proxy network so Traefik can reach the
+container; declaring it external means a local run needs that network to
+exist, hence the one-time `docker network create`. On the server Coolify
+already provides it.
 
 - No host port is published. The container only `expose`s 50051 on the
   proxy network, so Traefik reaches it and the internet does not.
@@ -109,28 +115,47 @@ docker compose up -d --build
 
 gRPC is HTTP/2. Traefik's default backend scheme is `http`, which downgrades
 the connection to HTTP/1.1 and makes every gRPC call fail while the container
-still reports healthy. `docker-compose.yml` therefore ships explicit Traefik
-labels that set `loadbalancer.server.scheme=h2c`.
+still reports healthy. `docker-compose.yml` ships explicit Traefik labels that
+set `loadbalancer.server.scheme=h2c`.
+
+Three things about those labels are easy to get wrong:
+
+- **`MCP_DOMAIN` needs Coolify's escaping turned off.** By default Coolify
+  rewrites `$` to `$$` when it renders the compose file, which delivers
+  `${MCP_DOMAIN}` to the container as a literal string so the router matches
+  nothing. Turn **off** "Escape special characters?" (Configuration →
+  Advanced) and set `MCP_DOMAIN` in the resource's env vars.
+- **The container must join the `coolify` network.** `traefik.docker.network`
+  only tells Traefik which network to read the backend IP from — it does not
+  attach the container. Coolify attaches the proxy network on its own only
+  when a domain is set in its UI, which this setup deliberately leaves empty.
+- **Use a dedicated subdomain**, e.g. `radiobrowser-api-mcp.d.imaxim.org` —
+  not the hostname that serves the Coolify dashboard, since two routers on one
+  host compete. Traefik issues the certificate via `letsencrypt`.
 
 To deploy on Coolify:
 
-1. Set `MCP_DOMAIN` in the resource's env vars (e.g. `mcp.example.com`), plus
-   `RADIO_MCP_AUTH_TOKEN`.
-2. Configuration → Advanced → turn **off** "Generate default labels", and
-   leave the domain field empty. Coolify's generated labels would otherwise
-   add a second router on the same Host using the default `http` scheme,
-   which shadows the h2c one non-deterministically.
-3. Point DNS for `MCP_DOMAIN` at the server and deploy.
+1. Set `MCP_DOMAIN` and `RADIO_MCP_AUTH_TOKEN` in the resource's env vars —
+   without the token the mutating tools are open to anyone who can reach the
+   endpoint.
+2. Configuration → Advanced → turn **off** "Generate default labels" and clear
+   the domain field, so Coolify does not add a competing router using the
+   default `http` scheme; and turn **off** "Escape special characters?" so
+   `MCP_DOMAIN` interpolates.
+3. Deploy, then confirm the rule label resolved on the server:
 
-Clients then connect over TLS with no port suffix:
+   ```sh
+   docker inspect <container> --format \
+     '{{index .Config.Labels "traefik.http.routers.radiobrowser-mcp.rule"}}'
+   ```
+
+   It must print the real hostname, not a literal `${MCP_DOMAIN}`.
+
+Then test with a gRPC client over TLS on 443, no port suffix:
 
 ```sh
-grpcurl mcp.example.com:443 radio_mcp.RadioMcpService/ListTools
+grpcurl radiobrowser-api-mcp.d.imaxim.org:443 radiomcp.RadioMcpService/ListTools
 ```
-
-The `certresolver=letsencrypt` and `entrypoints=https` label values match
-Coolify's stock Traefik setup; change them if your proxy names them
-differently.
 
 ## Client config (example)
 
