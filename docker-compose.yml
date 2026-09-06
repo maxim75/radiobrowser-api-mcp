@@ -44,6 +44,11 @@ services:
       - traefik.enable=true
       - traefik.docker.network=coolify
       - traefik.http.routers.radiobrowser-mcp.rule=Host(`${MCP_DOMAIN:-radiobrowser.localhost}`)
+      # Coolify's generated router uses the longer rule `Host(x) && PathPrefix(/)`,
+      # and Traefik ranks by rule length by default, so it would win and serve
+      # this host over plain http. An explicit priority puts this router first
+      # whether or not "Generate default labels" is left on.
+      - traefik.http.routers.radiobrowser-mcp.priority=1000
       - traefik.http.routers.radiobrowser-mcp.entrypoints=https
       - traefik.http.routers.radiobrowser-mcp.tls=true
       - traefik.http.routers.radiobrowser-mcp.tls.certresolver=letsencrypt
