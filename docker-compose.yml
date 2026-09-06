@@ -10,3 +10,15 @@ services:
       # Optional: Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
+    healthcheck:
+      # ListTools is in-process (no upstream Radio Browser dependency),
+      # so it proves the gRPC bridge is serving without flaky network.
+      test:
+        [
+          "CMD-SHELL",
+          ".venv/bin/python -c \"import grpc, radio_mcp_pb2 as pb2, radio_mcp_pb2_grpc as p; p.RadioMcpServiceStub(grpc.insecure_channel('127.0.0.1:50051')).ListTools(pb2.ListToolsRequest(), timeout=5)\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
