@@ -4,27 +4,42 @@ services:
     image: radiobrowser-api-mcp:latest
     container_name: radiobrowser-api-mcp
     restart: unless-stopped
-    # No `ports:` — publishing bypasses Coolify's Traefik proxy entirely
-    # (that is what left the app reachable only on plain http://…:50052).
-    # `expose` keeps 50052 reachable on the proxy network so Traefik can
-    # terminate TLS and serve it on 443. Set the domain in Coolify WITH the
-    # container port appended: https://<your-domain>:50052 — the port tells
-    # Traefik where to forward and does NOT appear in the public URL.
+    # No `ports:` — publishing bypasses Coolify's Traefik proxy entirely.
+    # `expose` keeps 50051 reachable on the proxy network so Traefik can
+    # forward to it.
     expose:
-      - "50052"
+      - "50051"
     environment:
-      # NOTE: only grpc_server.py reads this, and this container runs the
-      # streamable-http transport — so it currently protects NOTHING.
-      # The /mcp endpoint is unauthenticated, mutating tools included.
+      # Bearer token required for the mutating tools
+      # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
+    # Traefik routing for gRPC. The backend speaks cleartext HTTP/2 (h2c), so
+    # the loadbalancer scheme MUST be h2c — with the default `http` scheme
+    # Traefik downgrades to HTTP/1.1 and every gRPC call fails even though the
+    # container is healthy. Traefik's `https` entrypoint negotiates h2 via TLS
+    # ALPN, so clients connect to https://$MCP_DOMAIN with no port suffix.
+    #
+    # IMPORTANT (Coolify): turn OFF "Generate default labels" for this
+    # resource (Configuration → Advanced) and leave the domain field empty.
+    # Coolify's generated labels create a second router on the same Host with
+    # the default http scheme, which shadows this one non-deterministically.
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.radiobrowser-mcp.rule=Host(`${MCP_DOMAIN:-radiobrowser.localhost}`)
+      - traefik.http.routers.radiobrowser-mcp.entrypoints=https
+      - traefik.http.routers.radiobrowser-mcp.tls=true
+      - traefik.http.routers.radiobrowser-mcp.tls.certresolver=letsencrypt
+      - traefik.http.routers.radiobrowser-mcp.service=radiobrowser-mcp
+      - traefik.http.services.radiobrowser-mcp.loadbalancer.server.port=50051
+      - traefik.http.services.radiobrowser-mcp.loadbalancer.server.scheme=h2c
     healthcheck:
-      # Streamable HTTP endpoint (Coolify-facing transport): a GET on /mcp
-      # answers 406 when the app is serving (406 = needs SSE accept header,
-      # but proves uvicorn + the MCP app are up).
+      # gRPC ListTools is in-process (no upstream Radio Browser dependency),
+      # so it proves the bridge is serving without flaky network.
       test:
         [
           "CMD-SHELL",
-          ".venv/bin/python -c \"import sys,urllib.request,urllib.error;\\ntry:\\n    urllib.request.urlopen('http://127.0.0.1:50052/mcp',timeout=5)\\nexcept urllib.error.HTTPError as e:\\n    sys.exit(0 if e.code in (400,404,405,406) else 1)\"",
+          ".venv/bin/python -c \"import grpc, radio_mcp_pb2 as pb2, radio_mcp_pb2_grpc as p; p.RadioMcpServiceStub(grpc.insecure_channel('127.0.0.1:50051')).ListTools(pb2.ListToolsRequest(), timeout=5)\"",
         ]
       interval: 30s
       timeout: 10s

@@ -96,17 +96,41 @@ point it at this repo.
 docker compose up -d --build
 ```
 
-- Host port is configurable: `GRPC_PORT=50099 docker compose up -d` maps
-  host `50099` → container `50051` (the in-container port is fixed).
-  The host bind is loopback-only; Coolify overrides networking itself.
+- No host port is published. The container only `expose`s 50051 on the
+  proxy network, so Traefik reaches it and the internet does not.
 - For remote/Coolify deployments, set `RADIO_MCP_AUTH_TOKEN` (Coolify env
   vars) so the mutating tools require a Bearer token (see gRPC auth above).
 - The image installs runtime deps only (`uv sync --frozen --no-dev`) and
   ships pre-generated protobuf stubs, so no build tools are needed at deploy.
-- Uses insecure (plaintext) gRPC — put it behind a private network or a
-  TLS-terminating reverse proxy; do not expose it directly to the internet.
-- Note: the default host port 50051 may collide if something already listens
-  there (seen locally); set `GRPC_PORT` to avoid it.
+- The server itself speaks plaintext gRPC. TLS is terminated by Traefik; do
+  not publish port 50051 to the internet directly.
+
+### Traefik / h2c (required)
+
+gRPC is HTTP/2. Traefik's default backend scheme is `http`, which downgrades
+the connection to HTTP/1.1 and makes every gRPC call fail while the container
+still reports healthy. `docker-compose.yml` therefore ships explicit Traefik
+labels that set `loadbalancer.server.scheme=h2c`.
+
+To deploy on Coolify:
+
+1. Set `MCP_DOMAIN` in the resource's env vars (e.g. `mcp.example.com`), plus
+   `RADIO_MCP_AUTH_TOKEN`.
+2. Configuration → Advanced → turn **off** "Generate default labels", and
+   leave the domain field empty. Coolify's generated labels would otherwise
+   add a second router on the same Host using the default `http` scheme,
+   which shadows the h2c one non-deterministically.
+3. Point DNS for `MCP_DOMAIN` at the server and deploy.
+
+Clients then connect over TLS with no port suffix:
+
+```sh
+grpcurl mcp.example.com:443 radio_mcp.RadioMcpService/ListTools
+```
+
+The `certresolver=letsencrypt` and `entrypoints=https` label values match
+Coolify's stock Traefik setup; change them if your proxy names them
+differently.
 
 ## Client config (example)
 
