@@ -18,6 +18,7 @@ import os
 import threading
 
 import grpc
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 import radio_mcp_pb2 as pb2
 import radio_mcp_pb2_grpc as pb2_grpc
@@ -170,15 +171,40 @@ class RadioMcpServicer(pb2_grpc.RadioMcpServiceServicer):
         return pb2.ListToolsResponse(tools_json=json.dumps(payload))
 
 
-def serve(host: str = "127.0.0.1", port: int = 50051, max_workers: int = 32) -> None:
+def build_server(
+    host: str = "127.0.0.1",
+    port: int = 50051,
+    max_workers: int = 32,
+    auth_token: str = "",
+) -> tuple[grpc.Server, health.HealthServicer]:
+    """Create (but do not start) the gRPC server with health checking.
+
+    Split out from serve() so tests can bind a loopback port without
+    duplicating servicer wiring; the standard grpc.health.v1 service reports
+    SERVING for "" and "radiomcp.RadioMcpService" once started.
+    """
     grpc_server = grpc.server(
         concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
     )
     pb2_grpc.add_RadioMcpServiceServicer_to_server(
-        RadioMcpServicer(auth_token=os.environ.get("RADIO_MCP_AUTH_TOKEN", "")),
+        RadioMcpServicer(auth_token=auth_token),
         grpc_server,
     )
+    health_servicer = health.HealthServicer()
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, grpc_server)
+    for service in ("", "radiomcp.RadioMcpService"):
+        health_servicer.set(service, health_pb2.HealthCheckResponse.SERVING)
     grpc_server.add_insecure_port(f"{host}:{port}")
+    return grpc_server, health_servicer
+
+
+def serve(host: str = "127.0.0.1", port: int = 50051, max_workers: int = 32) -> None:
+    grpc_server, _health = build_server(
+        host,
+        port,
+        max_workers,
+        auth_token=os.environ.get("RADIO_MCP_AUTH_TOKEN", ""),
+    )
     grpc_server.start()
     print(f"radiobrowser-api-mcp gRPC listening on {host}:{port}")
     grpc_server.wait_for_termination()
