@@ -6,15 +6,33 @@ services:
     restart: unless-stopped
     # No `ports:` — publishing bypasses Coolify's Traefik proxy entirely.
     # `expose` keeps 50051 reachable on the proxy network so Traefik can
-    # forward to it. Set the domain in Coolify WITH the
-    # container port appended: https://<your-domain>:50051 — the port tells
-    # Traefik where to forward and does NOT appear in the public URL.
+    # forward to it.
     expose:
       - "50051"
     environment:
       # Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
+    # Traefik routing for gRPC. The backend speaks cleartext HTTP/2 (h2c), so
+    # the loadbalancer scheme MUST be h2c — with the default `http` scheme
+    # Traefik downgrades to HTTP/1.1 and every gRPC call fails even though the
+    # container is healthy. Traefik's `https` entrypoint negotiates h2 via TLS
+    # ALPN, so clients connect to https://$MCP_DOMAIN with no port suffix.
+    #
+    # IMPORTANT (Coolify): turn OFF "Generate default labels" for this
+    # resource (Configuration → Advanced) and leave the domain field empty.
+    # Coolify's generated labels create a second router on the same Host with
+    # the default http scheme, which shadows this one non-deterministically.
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.radiobrowser-mcp.rule=Host(`${MCP_DOMAIN:-radiobrowser.localhost}`)
+      - traefik.http.routers.radiobrowser-mcp.entrypoints=https
+      - traefik.http.routers.radiobrowser-mcp.tls=true
+      - traefik.http.routers.radiobrowser-mcp.tls.certresolver=letsencrypt
+      - traefik.http.routers.radiobrowser-mcp.service=radiobrowser-mcp
+      - traefik.http.services.radiobrowser-mcp.loadbalancer.server.port=50051
+      - traefik.http.services.radiobrowser-mcp.loadbalancer.server.scheme=h2c
     healthcheck:
       # gRPC ListTools is in-process (no upstream Radio Browser dependency),
       # so it proves the bridge is serving without flaky network.
