@@ -49,7 +49,7 @@ Directory search (`search_radio_stations`, `advanced_station_search`,
 Rankings & history: `get_top_voted_stations`, `get_most_clicked_stations`,
 `get_recently_clicked_stations`, `get_recently_updated_stations`
 (`topvote/topclick/lastclick/lastchange`), `get_station_check_history`
-(`GET /json/checks`).
+(`GET /json/checks` — the API ignores `limit`, so bound with `seconds`).
 
 Counters & submission: `register_station_click` (`/click`), `vote_for_station`
 (`/vote`), `resolve_station_stream_url` (`/url`), `add_station` (`POST /add`).
@@ -68,12 +68,23 @@ uv run server.py --transport grpc --port 50051  # gRPC for remote connections
 
 gRPC exposes all 29 tools via `CallTool(name, arguments_json)` /
 `ListTools()` — see `radio_mcp.proto`. The bridge is a generic JSON
-pass-through, so new MCP tools need no gRPC-side changes. Regenerate stubs
+pass-through, so new MCP tools need no gRPC-side changes. `CallTool` results
+are wrapped in an explicit envelope `{"items": [...], "count": N}` so clients
+can tell an object result apart from a one-item list. Regenerate stubs
 only when the `.proto` changes:
 
 ```sh
 uv run python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. radio_mcp.proto
 ```
+
+### gRPC auth (remote deployments)
+
+`register_station_click`, `vote_for_station`, `resolve_station_stream_url`
+and `add_station` mutate the public directory. When `RADIO_MCP_AUTH_TOKEN`
+is set, calls to these tools must carry
+`authorization: Bearer <token>` gRPC metadata; read-only tools stay open.
+Unset (default) means everything is open — fine for localhost, not for the
+internet.
 
 ## Deploy (Docker / Coolify)
 
@@ -87,12 +98,15 @@ docker compose up -d --build
 
 - Host port is configurable: `GRPC_PORT=50099 docker compose up -d` maps
   host `50099` → container `50051` (the in-container port is fixed).
+  The host bind is loopback-only; Coolify overrides networking itself.
+- For remote/Coolify deployments, set `RADIO_MCP_AUTH_TOKEN` (Coolify env
+  vars) so the mutating tools require a Bearer token (see gRPC auth above).
 - The image installs runtime deps only (`uv sync --frozen --no-dev`) and
   ships pre-generated protobuf stubs, so no build tools are needed at deploy.
 - Uses insecure (plaintext) gRPC — put it behind a private network or a
   TLS-terminating reverse proxy; do not expose it directly to the internet.
-- Note: Coolify's default `0.0.0.0:50051` host binding may collide if
-  something already listens there (seen locally); set `GRPC_PORT` to avoid it.
+- Note: the default host port 50051 may collide if something already listens
+  there (seen locally); set `GRPC_PORT` to avoid it.
 
 ## Client config (example)
 

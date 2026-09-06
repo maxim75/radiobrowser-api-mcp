@@ -5,7 +5,8 @@ services:
     container_name: radiobrowser-api-mcp
     restart: unless-stopped
     ports:
-      - "${GRPC_PORT:-50051}:50051"
+      - "127.0.0.1:${GRPC_PORT:-50051}:50051"
     environment:
-      # No secrets or config required; kept for Coolify overrides.
-      GRPC_PORT: ${GRPC_PORT:-50051}
+      # Optional: Bearer token required for the mutating tools
+      # (vote/click/url/add) over gRPC. Set in Coolify env vars.
+      RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
