@@ -49,6 +49,11 @@ uv run python -c "import asyncio, server; ..."  # smoke test via server.mcp.call
 
 - `register_station_click`, `vote_for_station`, `resolve_station_stream_url`, `add_station` mutate public directory counters — never call them in smoke tests. Use `get_directory_stats`, facet lists, and read-only station tools.
 
+## Error surfacing (MCP SDK v2)
+
+- SDK wraps non-`ToolError` exceptions in `UnexpectedToolError` whose message is only `Error executing tool <name>`; detail survives in `__cause__`. Anticipated failures must raise `ToolError` (import under the v1/v2 shim). `grpc_server` unwraps `str(exc.__cause__ or exc)` for the same reason.
+- `get_now_playing` semantics: ranked curated fallback (>= 2 keyword overlap) + same-station loop gate (>= 2 `_station_tokens` overlap, parens stripped) + direct-streams-first sort (non-HLS scores higher under `reverse=True`). `test_server.py` pins all three — run `uv run pytest -q` and `uv run ruff check .` before pushing.
+
 ## Client config gotcha (macOS GUI clients)
 
 GUI apps don't inherit shell `PATH`: use the full uv path (`/Users/maksym/.local/bin/uv`) or the venv interpreter (`.venv/bin/python`) as the command, with one argument per line.

@@ -13,4 +13,18 @@ dependencies = [
 [dependency-groups]
 dev = [
     "grpcio-tools>=1.83.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.6",
 ]
+
+[tool.ruff]
+target-version = "py312"
+exclude = ["radio_mcp_pb2.py", "radio_mcp_pb2_grpc.py"]
+
+[tool.ruff.lint]
+# BLE (blind except) is intentional: mirror failover must survive any
+# network error; the gRPC bridge must serialize any tool failure in-band.
+ignore = ["BLE001"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]

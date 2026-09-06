@@ -21,7 +21,6 @@ Run:
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 import urllib.error
@@ -32,10 +31,18 @@ from dataclasses import asdict, dataclass
 
 try:  # MCP SDK v2.x: FastMCP was renamed to MCPServer
     from mcp.server.mcpserver import MCPServer as _Server
+    from mcp.server.mcpserver.exceptions import ToolError
 
     mcp = _Server("radio-now-playing")
 except ImportError:  # MCP SDK v1.x
     from mcp.server.fastmcp import FastMCP as _Server
+
+    try:
+        from mcp.server.fastmcp.exceptions import ToolError
+    except ImportError:  # very old v1: surface messages via RuntimeError
+
+        class ToolError(RuntimeError):
+            pass
 
     mcp = _Server("radio-now-playing")
 
@@ -55,9 +62,24 @@ UUID_RE = re.compile(
 # --- Radio Browser API client (shared by the directory tools) ---
 
 STATION_ORDERS = {
-    "name", "url", "homepage", "favicon", "tags", "country", "state",
-    "language", "votes", "codec", "bitrate", "lastcheckok", "lastchecktime",
-    "clicktimestamp", "clickcount", "clicktrend", "changetimestamp", "random",
+    "name",
+    "url",
+    "homepage",
+    "favicon",
+    "tags",
+    "country",
+    "state",
+    "language",
+    "votes",
+    "codec",
+    "bitrate",
+    "lastcheckok",
+    "lastchecktime",
+    "clicktimestamp",
+    "clickcount",
+    "clicktrend",
+    "changetimestamp",
+    "random",
 }
 FACET_ORDERS = {"name", "stationcount"}
 
@@ -70,7 +92,7 @@ def _quote(value: str) -> str:
 def _require_uuid(station_uuid: str) -> str:
     """Fail fast on malformed station UUIDs instead of a network round trip."""
     if not UUID_RE.match(station_uuid or ""):
-        raise ValueError(f"invalid station uuid {station_uuid!r}")
+        raise ToolError(f"invalid station uuid {station_uuid!r}")
     return station_uuid
 
 
@@ -103,7 +125,7 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 15):
             except Exception:
                 detail = ""
             if 400 <= exc.code < 500:
-                raise RuntimeError(
+                raise ToolError(
                     f"Radio Browser request failed (/{path}): HTTP {exc.code}: {detail}"
                 )
             last_error = exc  # 5xx: try next mirror
@@ -111,7 +133,7 @@ def _api_get(path: str, params: dict | None = None, timeout: int = 15):
         except Exception as exc:  # network error: try next mirror
             last_error = exc
             continue
-    raise RuntimeError(f"Radio Browser request failed (/{path}): {last_error}")
+    raise ToolError(f"Radio Browser request failed (/{path}): {last_error}")
 
 
 def _api_post(path: str, data: dict, timeout: int = 15) -> dict:
@@ -131,7 +153,7 @@ def _api_post(path: str, data: dict, timeout: int = 15) -> dict:
             except Exception:
                 detail = ""
             if 400 <= exc.code < 500:
-                raise RuntimeError(
+                raise ToolError(
                     f"Radio Browser request failed (/{path}): HTTP {exc.code}: {detail}"
                 )
             last_error = exc  # 5xx: try next mirror
@@ -139,7 +161,7 @@ def _api_post(path: str, data: dict, timeout: int = 15) -> dict:
         except Exception as exc:  # network error: try next mirror
             last_error = exc
             continue
-    raise RuntimeError(f"Radio Browser request failed (/{path}): {last_error}")
+    raise ToolError(f"Radio Browser request failed (/{path}): {last_error}")
 
 
 def _slim_station(item: dict) -> dict:
@@ -178,7 +200,9 @@ def _station_list_params(
 ) -> dict:
     """Validate + build order/reverse/offset/limit/hidebroken query params."""
     if order not in STATION_ORDERS:
-        raise ValueError(f"invalid order {order!r}; choose from {sorted(STATION_ORDERS)}")
+        raise ToolError(
+            f"invalid order {order!r}; choose from {sorted(STATION_ORDERS)}"
+        )
     return {
         "order": order,
         "reverse": "true" if reverse else "false",
@@ -190,7 +214,7 @@ def _station_list_params(
 
 def _facet_params(order: str = "name", reverse: bool = False) -> dict:
     if order not in FACET_ORDERS:
-        raise ValueError(f"invalid order {order!r}; choose from {sorted(FACET_ORDERS)}")
+        raise ToolError(f"invalid order {order!r}; choose from {sorted(FACET_ORDERS)}")
     return {"order": order, "reverse": "true" if reverse else "false"}
 
 
@@ -254,17 +278,25 @@ def _station_tokens(name: str) -> set[str]:
 
 
 def known_station_fallback(query: str) -> list[StationCandidate]:
-    """Return curated candidates when the query mentions a known station."""
+    """Return curated candidates when the query mentions a known station.
+
+    Ranked by keyword overlap with a minimum of 2 matching tokens, so
+    "smooth 91.5 melbourne" matches Melbourne (3) above Sydney (1, dropped).
+    The >= 2 threshold also subsumes the old "smooth"-must-be-present guard:
+    a bare "sydney" query scores 1 and matches nothing.
+    """
     tokens = set(re.findall(r"[a-z0-9.]+", query.lower()))
-    matches = [c for keywords, c in KNOWN_STATIONS if tokens & set(keywords)]
-    # Only use the fallback when "smooth" itself is mentioned, to avoid
-    # hijacking unrelated queries like "Sydney talk radio".
-    if matches and "smooth" not in tokens:
-        return []
-    return matches
+    scored = [
+        (len(tokens & set(keywords)), candidate)
+        for keywords, candidate in KNOWN_STATIONS
+        if len(tokens & set(keywords)) >= 2
+    ]
+    return [c for _, c in sorted(scored, key=lambda p: -p[0])]
 
 
-def ranked_search(query: str, limit: int = 8, timeout: int = 15) -> list[StationCandidate]:
+def ranked_search(
+    query: str, limit: int = 8, timeout: int = 15
+) -> list[StationCandidate]:
     """Directory search with token-fallback + fuzzy ranking + curated entries.
 
     Token sub-queries run concurrently; each has its own `timeout` budget.
@@ -272,20 +304,28 @@ def ranked_search(query: str, limit: int = 8, timeout: int = 15) -> list[Station
     tokens = [t for t in re.findall(r"[a-z0-9.]+", query.lower()) if len(t) >= 3]
     queries = [query, *[t for t in tokens if t != query.lower()]]
     seen: dict[str, StationCandidate] = {}
-    with concurrent_futures.ThreadPoolExecutor(max_workers=min(len(queries), 6)) as pool:
-        future_map = {pool.submit(search_stations, q, limit, timeout): q for q in queries}
+    with concurrent_futures.ThreadPoolExecutor(
+        max_workers=min(len(queries), 6)
+    ) as pool:
+        future_map = {
+            pool.submit(search_stations, q, limit, timeout): q for q in queries
+        }
         for future in concurrent_futures.as_completed(future_map):
             try:
                 for c in future.result():
                     seen.setdefault(c.url, c)
-            except RuntimeError:
-                continue  # one bad mirror batch must not kill the search
+            except ToolError:
+                # ToolError is NOT a RuntimeError subclass under SDK v2, so it
+                # needs its own clause: one bad batch must not kill the search.
+                continue
     query_tokens = set(tokens)
     directory = list(seen.values())
 
     def score(c: StationCandidate) -> tuple[int, int, int]:
         overlap = len(query_tokens & _station_tokens(c.name))
-        return (overlap, c.votes + c.clickcount, 0 if not c.hls else 1)
+        # Direct streams first (HLS carries no ICY metadata); note the list
+        # sorts reverse=True, so non-HLS must score HIGHER (1, not 0).
+        return (overlap, c.votes + c.clickcount, 1 if not c.hls else 0)
 
     directory.sort(key=score, reverse=True)
     # Keep only decent matches when the query was specific; otherwise the
@@ -297,7 +337,9 @@ def ranked_search(query: str, limit: int = 8, timeout: int = 15) -> list[Station
     return known_station_fallback(query) + directory
 
 
-def search_stations(query: str, limit: int = 8, timeout: int = 15) -> list[StationCandidate]:
+def search_stations(
+    query: str, limit: int = 8, timeout: int = 15
+) -> list[StationCandidate]:
     """Find streamable stations matching `query` via the Radio Browser API."""
     payload = _api_get(
         "json/stations/search",
@@ -334,18 +376,24 @@ def _parse_stream_title(block: bytes) -> str | None:
 
     Blocks hold ';'-separated key='value' pairs; a song title may itself
     contain "';" (e.g. "Don't Stop'; ..."), so match the opening
-    "StreamTitle='" and read to the next "';" instead of a regex scan.
+    "StreamTitle='" and read to the terminating "';". An empty first pair
+    (common during ad breaks: "StreamTitle='';StreamTitle='Real';") is
+    skipped in favour of the next pair.
     """
     marker = b"StreamTitle='"
-    start = block.find(marker)
-    if start == -1:
-        return None
-    start += len(marker)
-    end = block.find(b"';", start)
-    if end == -1:
-        return None
-    title = block[start:end].decode("utf-8", "replace").strip().strip("\x00")
-    return title or None
+    pos = 0
+    while True:
+        start = block.find(marker, pos)
+        if start == -1:
+            return None
+        start += len(marker)
+        end = block.find(b"';", start)
+        if end == -1:
+            return None
+        title = block[start:end].decode("utf-8", "replace").strip().strip("\x00")
+        if title:
+            return title
+        pos = end + 2  # empty pair: keep scanning the rest of the block
 
 
 def fetch_icy_metadata(
@@ -367,7 +415,7 @@ def fetch_icy_metadata(
         metaint_raw = headers.get("icy-metaint")
         metaint = _to_int(metaint_raw, default=-1) if metaint_raw else -1
         if metaint <= 0:
-            raise RuntimeError(
+            raise ToolError(
                 f"stream does not advertise usable ICY metadata (icy-metaint={metaint_raw!r})"
             )
 
@@ -378,9 +426,7 @@ def fetch_icy_metadata(
         }
         # Bitrate-scaled scan window: ad breaks carry empty StreamTitles, so a
         # fixed small block count often misses the song. Capped at 150 blocks.
-        bitrate_kbps = _to_int(headers.get("icy-br"), default=0) or 32
-        if bitrate_kbps < 32:
-            bitrate_kbps = 32
+        bitrate_kbps = max(_to_int(headers.get("icy-br"), default=0), 32)
         blocks = max(15, min(150, int(timeout * bitrate_kbps * 1000 / 8 / metaint) + 2))
         for _ in range(blocks):
             if time.monotonic() >= deadline:
@@ -414,7 +460,8 @@ def get_now_playing(station_name: str, timeout: int = 20) -> dict:
 
     Args:
         station_name: Station name, e.g. "Smooth FM Sydney" or "smooth 95.3".
-        timeout: Per-request timeout in seconds for directory + stream reads.
+        timeout: Seconds for directory + stream reads; clamped to 1-60, and
+            shared as an overall deadline across all candidates tried.
 
     Returns:
         Dict with artist, title, raw_title, station_matched, country and
@@ -422,9 +469,10 @@ def get_now_playing(station_name: str, timeout: int = 20) -> dict:
         sending no track titles right now). Raises (as an MCP error) when
         nothing is found.
     """
+    timeout = max(1, min(int(timeout), 60))
     candidates = ranked_search(station_name, timeout=timeout)
     if not candidates:
-        raise RuntimeError(f"No stations found for {station_name!r}")
+        raise ToolError(f"No stations found for {station_name!r}")
 
     def result_for(candidate: StationCandidate, raw_title: str | None) -> dict:
         artist, title = split_artist_title(raw_title) if raw_title else (None, None)
@@ -440,34 +488,43 @@ def get_now_playing(station_name: str, timeout: int = 20) -> dict:
     errors: list[str] = []
     first_connected: dict | None = None
     first_tokens: set[str] = set()
+    deadline = time.monotonic() + timeout
     for candidate in candidates:
+        if time.monotonic() >= deadline:
+            errors.append("overall time budget exhausted")
+            break
         if not candidate.url.lower().startswith(("http://", "https://")):
             errors.append(f"{candidate.name}: unsupported URL {candidate.url!r}")
             continue
         try:
-            icy_info, raw_title = fetch_icy_metadata(candidate.url, timeout=timeout)
-        except (OSError, urllib.error.URLError, RuntimeError) as exc:
+            # Per-fetch budget is whatever remains of the overall deadline.
+            remaining = max(1, int(deadline - time.monotonic()))
+            _icy_info, raw_title = fetch_icy_metadata(candidate.url, timeout=remaining)
+        except (OSError, urllib.error.URLError, ToolError) as exc:
             # OSError covers socket errors; URLError wraps DNS/refused/timeouts
             # (socket.timeout == TimeoutError is an OSError subclass, caught too).
             errors.append(f"{candidate.name}: {exc}")
             continue
+        if first_connected is not None and (
+            len(_station_tokens(candidate.name) & first_tokens) < 2
+        ):
+            # A station connected but was silent (ad/talk break); this is a
+            # DIFFERENT station — never answer with its song.
+            break
         if raw_title:
             return result_for(candidate, raw_title)
         if first_connected is None:
-            # Top-ranked station reached but silent (ad/talk break). Only keep
+            # Top-ranked station reached but silent. Remember it and only keep
             # trying entries that look like the SAME station (e.g. alternate
-            # bitrates) — never answer with a different station's song.
+            # bitrates, which share >= 2 name tokens).
             first_connected = result_for(candidate, None)
             first_tokens = _station_tokens(candidate.name)
             continue
-        if len(_station_tokens(candidate.name) & first_tokens) >= 2:
-            continue  # same station, same break — skip without extra waiting
-        break
     if first_connected is not None:
         return first_connected
 
     tried = "; ".join(errors) if errors else "no usable streams"
-    raise RuntimeError(f"Could not read now-playing info for {station_name!r}: {tried}")
+    raise ToolError(f"Could not read now-playing info for {station_name!r}: {tried}")
 
 
 @mcp.tool()
@@ -529,7 +586,9 @@ def advanced_station_search(
     if countrycode:
         params["countrycode"] = countrycode
     if not params:
-        raise ValueError("pass at least one of name/country/countrycode/state/language/tag/codec")
+        raise ToolError(
+            "pass at least one of name/country/countrycode/state/language/tag/codec"
+        )
     params.update(_station_list_params(order, reverse, offset, limit, hidebroken))
     return _slim_stations(_api_get("json/stations/search", params, timeout))
 
@@ -551,9 +610,11 @@ def list_all_stations(
 @mcp.tool()
 def get_station_by_uuid(station_uuid: str, timeout: int = 15) -> dict:
     """Get one station by its stationuuid (GET /json/stations/byuuid/{uuid})."""
-    payload = _api_get(f"json/stations/byuuid/{_quote(_require_uuid(station_uuid))}", None, timeout)
+    payload = _api_get(
+        f"json/stations/byuuid/{_quote(_require_uuid(station_uuid))}", None, timeout
+    )
     if not payload:
-        raise RuntimeError(f"no station found for uuid {station_uuid!r}")
+        raise ToolError(f"no station found for uuid {station_uuid!r}")
     return _slim_station(payload[0])
 
 
@@ -581,9 +642,7 @@ def _stations_by_facet(
     base, exact_base = _FACET_ENDPOINTS[facet]
     endpoint = exact_base if exact else base
     params = _station_list_params(order, reverse, offset, limit, hidebroken)
-    payload = _api_get(
-        f"json/stations/{endpoint}/{_quote(value)}", params, timeout
-    )
+    payload = _api_get(f"json/stations/{endpoint}/{_quote(value)}", params, timeout)
     return _slim_stations(payload)
 
 
@@ -599,7 +658,9 @@ def find_stations_by_name(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by name (GET /json/stations/byname[/exact]/{name})."""
-    return _stations_by_facet("name", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "name", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -614,7 +675,9 @@ def find_stations_by_country(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by country, e.g. "Australia" (GET /json/stations/bycountry[/exact]/{country})."""
-    return _stations_by_facet("country", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "country", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -647,7 +710,9 @@ def find_stations_by_state(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by state/region (GET /json/stations/bystate[/exact]/{state})."""
-    return _stations_by_facet("state", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "state", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -662,7 +727,9 @@ def find_stations_by_language(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by broadcast language, e.g. "english" (GET /json/stations/bylanguage[/exact]/{language})."""
-    return _stations_by_facet("language", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "language", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -677,7 +744,9 @@ def find_stations_by_tag(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by tag/genre, e.g. "chill" (GET /json/stations/bytag[/exact]/{tag})."""
-    return _stations_by_facet("tag", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "tag", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -692,7 +761,9 @@ def find_stations_by_codec(
     timeout: int = 15,
 ) -> list[dict]:
     """Find stations by stream codec, e.g. "MP3" (GET /json/stations/bycodec[/exact]/{codec})."""
-    return _stations_by_facet("codec", value, exact, order, reverse, offset, limit, hidebroken, timeout)
+    return _stations_by_facet(
+        "codec", value, exact, order, reverse, offset, limit, hidebroken, timeout
+    )
 
 
 @mcp.tool()
@@ -778,7 +849,7 @@ def add_station(
 ) -> dict:
     """Submit a new station to the directory (POST /json/add). Only name + url are required."""
     if not name or not url:
-        raise ValueError("name and url are required")
+        raise ToolError("name and url are required")
     payload = _api_post(
         "json/add",
         {
@@ -798,12 +869,14 @@ def add_station(
         timeout,
     )
     if not payload.get("ok"):
-        raise RuntimeError(f"add_station rejected: {payload}")
+        raise ToolError(f"add_station rejected: {payload}")
     return payload
 
 
 @mcp.tool()
-def list_countries(order: str = "name", reverse: bool = False, timeout: int = 15) -> list[dict]:
+def list_countries(
+    order: str = "name", reverse: bool = False, timeout: int = 15
+) -> list[dict]:
     """Countries in the directory with station counts (GET /json/countries)."""
     return _api_get("json/countries", _facet_params(order, reverse), timeout)
 
@@ -862,7 +935,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="radiobrowser-api-mcp server")
     parser.add_argument(
-        "--transport", choices=["stdio", "grpc"], default="stdio",
+        "--transport",
+        choices=["stdio", "grpc"],
+        default="stdio",
         help="stdio for local MCP clients, grpc for remote connections",
     )
     parser.add_argument("--host", default="127.0.0.1", help="gRPC listen host")
