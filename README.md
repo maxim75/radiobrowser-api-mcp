@@ -120,11 +120,12 @@ set `loadbalancer.server.scheme=h2c`.
 
 Three things about those labels are easy to get wrong:
 
-- **`MCP_DOMAIN` needs Coolify's escaping turned off.** By default Coolify
-  rewrites `$` to `$$` when it renders the compose file, which delivers
-  `${MCP_DOMAIN}` to the container as a literal string so the router matches
-  nothing. Turn **off** "Escape special characters?" (Configuration →
-  Advanced) and set `MCP_DOMAIN` in the resource's env vars.
+- **`MCP_DOMAIN` needs Coolify's label escaping turned off.** By default
+  Coolify rewrites `$` to `$$`, which delivers `${MCP_DOMAIN}` to the container
+  as a literal string; Traefik then rejects the router outright
+  (`is not a valid hostname`) and repeatedly fails ACME orders for it. Uncheck
+  **"Escape special characters in labels"** in the resource's **Container
+  Labels** section, and set `MCP_DOMAIN` in its env vars.
 - **The container must join the `coolify` network.** `traefik.docker.network`
   only tells Traefik which network to read the backend IP from — it does not
   attach the container. Coolify attaches the proxy network on its own only
@@ -138,10 +139,13 @@ To deploy on Coolify:
 1. Set `MCP_DOMAIN` and `RADIO_MCP_AUTH_TOKEN` in the resource's env vars —
    without the token the mutating tools are open to anyone who can reach the
    endpoint.
-2. Configuration → Advanced → turn **off** "Generate default labels" and clear
-   the domain field, so Coolify does not add a competing router using the
-   default `http` scheme; and turn **off** "Escape special characters?" so
-   `MCP_DOMAIN` interpolates.
+2. In the **Container Labels** section, uncheck "Escape special characters in
+   labels" so `MCP_DOMAIN` interpolates.
+
+   Coolify's generated labels can stay on: they create a competing router for
+   the same host using the default `http` scheme, but this router carries
+   `priority=1000` and wins. Traefik otherwise ranks by rule length, and the
+   generated `Host(x) && PathPrefix(/)` is longer than `Host(x)`.
 3. Deploy, then confirm the rule label resolved on the server:
 
    ```sh
