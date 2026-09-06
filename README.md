@@ -1,7 +1,34 @@
 # RadioBrowser API — MCP server
 
-Exposes the track currently playing on a radio station, read live from the
-station's stream via ICY/Shoutcast metadata. No API keys needed.
+An MCP server for the [Radio Browser API](https://www.radio-browser.info/)
+plus live "now playing" track info read from station streams via
+ICY/Shoutcast metadata. No API keys needed.
+
+## What is the Radio Browser API?
+
+[Radio Browser](https://www.radio-browser.info/) is a free, community-driven
+directory of internet radio stations — currently ~58,000 stations
+(57,973 at last check) with ~12,000 tags. Anyone can submit stations, and
+automated jobs continuously probe stream health (`lastcheckok`). It exposes a
+free JSON webservice with no API key; the only requirement is sending a
+`User-Agent` header. The service runs on several mirror servers, which this
+project fails over across automatically:
+
+- `https://de1.api.radio-browser.info`
+- `https://de2.api.radio-browser.info`
+- `https://nl1.api.radio-browser.info`
+
+Useful links:
+
+- Directory search UI: <https://www.radio-browser.info/>
+- Webservice docs (endpoint reference): <https://www.radio-browser.info/webservice>
+- Server implementation (Rust): <https://github.com/segler-alex/radiobrowser-api-rust>
+- Web frontend: <https://github.com/segler-alex/radiobrowser-web-angular>
+
+What this project adds on top: every directory endpoint as an MCP tool, plus
+`get_now_playing`, which the directory itself cannot provide — it resolves a
+station name to a stream URL and reads the live track from the stream's
+ICY/Shoutcast metadata.
 
 ## Tools (29)
 
