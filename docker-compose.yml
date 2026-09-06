@@ -13,20 +13,30 @@ services:
       # Bearer token required for the mutating tools
       # (vote/click/url/add) over gRPC. Set in Coolify env vars.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
+    # Traefik must reach this container, so it has to sit on the proxy network
+    # as well as Coolify's project network. Coolify only attaches the proxy
+    # network on its own when a domain is set in the UI, which we deliberately
+    # leave empty (see the label block), so join it explicitly here.
+    networks:
+      - default
+      - coolify
     # Traefik routing for gRPC. The backend speaks cleartext HTTP/2 (h2c), so
     # the loadbalancer scheme MUST be h2c — with the default `http` scheme
     # Traefik downgrades to HTTP/1.1 and every gRPC call fails even though the
     # container is healthy. Traefik's `https` entrypoint negotiates h2 via TLS
-    # ALPN, so clients connect to https://$MCP_DOMAIN with no port suffix.
+    # ALPN, so clients connect on 443 with no port suffix.
     #
-    # IMPORTANT (Coolify): turn OFF "Generate default labels" for this
-    # resource (Configuration → Advanced) and leave the domain field empty.
-    # Coolify's generated labels create a second router on the same Host with
-    # the default http scheme, which shadows this one non-deterministically.
+    # The host is hardcoded on purpose: Coolify rewrites `$` to `$$` when it
+    # renders this file, so `${VAR}` reaches the container as a literal string
+    # and the rule matches nothing. Edit the two rule lines to change domains.
+    #
+    # IMPORTANT (Coolify): turn OFF "Generate default labels" for this resource
+    # (Configuration → Advanced) and leave the domain field empty, so Coolify
+    # does not add a competing router with the default http scheme.
     labels:
       - traefik.enable=true
       - traefik.docker.network=coolify
-      - traefik.http.routers.radiobrowser-mcp.rule=Host(`${MCP_DOMAIN:-radiobrowser.localhost}`)
+      - traefik.http.routers.radiobrowser-mcp.rule=Host(`radiobrowser-api-mcp.d.imaxim.org`)
       - traefik.http.routers.radiobrowser-mcp.entrypoints=https
       - traefik.http.routers.radiobrowser-mcp.tls=true
       - traefik.http.routers.radiobrowser-mcp.tls.certresolver=letsencrypt
@@ -45,3 +55,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+networks:
+  coolify:
+    external: true
