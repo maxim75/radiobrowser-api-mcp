@@ -120,27 +120,36 @@ set `loadbalancer.server.scheme=h2c`.
 
 Three things about those labels are easy to get wrong:
 
-- **The domain is hardcoded, not `${VAR}`.** Coolify rewrites `$` to `$$` when
-  it renders the compose file, so `${MCP_DOMAIN}` reaches the container as a
-  literal string and the router matches nothing. To change domains, edit the
-  `rule` label directly.
+- **`MCP_DOMAIN` needs Coolify's escaping turned off.** By default Coolify
+  rewrites `$` to `$$` when it renders the compose file, which delivers
+  `${MCP_DOMAIN}` to the container as a literal string so the router matches
+  nothing. Turn **off** "Escape special characters?" (Configuration →
+  Advanced) and set `MCP_DOMAIN` in the resource's env vars.
 - **The container must join the `coolify` network.** `traefik.docker.network`
   only tells Traefik which network to read the backend IP from — it does not
   attach the container. Coolify attaches the proxy network on its own only
   when a domain is set in its UI, which this setup deliberately leaves empty.
-- **The host is a dedicated subdomain**, `radiobrowser-api-mcp.d.imaxim.org`,
-  kept off `d.imaxim.org` itself because that hostname serves the Coolify
-  dashboard. It resolves through the existing `*.d.imaxim.org` wildcard, so
-  no DNS record is needed; Traefik issues its certificate via `letsencrypt`.
+- **Use a dedicated subdomain**, e.g. `radiobrowser-api-mcp.d.imaxim.org` —
+  not the hostname that serves the Coolify dashboard, since two routers on one
+  host compete. Traefik issues the certificate via `letsencrypt`.
 
 To deploy on Coolify:
 
-1. Set `RADIO_MCP_AUTH_TOKEN` in the resource's env vars — without it the
-   mutating tools are open to anyone who can reach the endpoint.
-2. Configuration → Advanced → turn **off** "Generate default labels", and
-   leave the domain field empty, so Coolify does not add a competing router
-   using the default `http` scheme.
-3. Deploy.
+1. Set `MCP_DOMAIN` and `RADIO_MCP_AUTH_TOKEN` in the resource's env vars —
+   without the token the mutating tools are open to anyone who can reach the
+   endpoint.
+2. Configuration → Advanced → turn **off** "Generate default labels" and clear
+   the domain field, so Coolify does not add a competing router using the
+   default `http` scheme; and turn **off** "Escape special characters?" so
+   `MCP_DOMAIN` interpolates.
+3. Deploy, then confirm the rule label resolved on the server:
+
+   ```sh
+   docker inspect <container> --format \
+     '{{index .Config.Labels "traefik.http.routers.radiobrowser-mcp.rule"}}'
+   ```
+
+   It must print the real hostname, not a literal `${MCP_DOMAIN}`.
 
 Then test with a gRPC client over TLS on 443, no port suffix:
 

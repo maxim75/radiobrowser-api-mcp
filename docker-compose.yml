@@ -26,9 +26,16 @@ services:
     # container is healthy. Traefik's `https` entrypoint negotiates h2 via TLS
     # ALPN, so clients connect on 443 with no port suffix.
     #
-    # The host is hardcoded on purpose: Coolify rewrites `$` to `$$` when it
-    # renders this file, so `${VAR}` reaches the container as a literal string
-    # and the rule matches nothing. Edit the two rule lines to change domains.
+    # The host comes from MCP_DOMAIN. Coolify escapes `$` to `$$` by default
+    # when it renders this file, which would deliver `${MCP_DOMAIN}` to the
+    # container as a literal string and match nothing — so the resource's
+    # "Escape special characters?" setting (Configuration → Advanced) must be
+    # turned OFF. Verify after deploying, on the server:
+    #
+    #   docker inspect <container> --format \
+    #     '{{index .Config.Labels "traefik.http.routers.radiobrowser-mcp.rule"}}'
+    #
+    # It must print the real hostname, not a literal ${MCP_DOMAIN}.
     #
     # IMPORTANT (Coolify): turn OFF "Generate default labels" for this resource
     # (Configuration → Advanced) and leave the domain field empty, so Coolify
@@ -36,7 +43,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=coolify
-      - traefik.http.routers.radiobrowser-mcp.rule=Host(`radiobrowser-api-mcp.d.imaxim.org`)
+      - traefik.http.routers.radiobrowser-mcp.rule=Host(`${MCP_DOMAIN:-radiobrowser.localhost}`)
       - traefik.http.routers.radiobrowser-mcp.entrypoints=https
       - traefik.http.routers.radiobrowser-mcp.tls=true
       - traefik.http.routers.radiobrowser-mcp.tls.certresolver=letsencrypt
