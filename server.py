@@ -314,8 +314,10 @@ def ranked_search(
             try:
                 for c in future.result():
                     seen.setdefault(c.url, c)
-            except RuntimeError:
-                continue  # one bad mirror batch must not kill the search
+            except ToolError:
+                # ToolError is NOT a RuntimeError subclass under SDK v2, so it
+                # needs its own clause: one bad batch must not kill the search.
+                continue
     query_tokens = set(tokens)
     directory = list(seen.values())
 

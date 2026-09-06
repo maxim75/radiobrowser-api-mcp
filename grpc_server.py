@@ -80,13 +80,22 @@ def _run(coro, timeout: float | None = None):
     return asyncio.run_coroutine_threadsafe(coro, _loop).result(timeout=timeout)
 
 
-def _call_timeout(context) -> float | None:
-    """Seconds remaining on the client's gRPC deadline, if any."""
+MAX_CALL_SECONDS = 300.0
+
+
+def _call_timeout(context) -> float:
+    """Seconds to wait for a call: the client's deadline, clamped.
+
+    A client with no deadline yields an int64 "infinite" sentinel, not None;
+    passing it to Future.result() overflows the platform time_t.
+    """
     try:
         remaining = context.time_remaining()
     except Exception:
-        return None
-    return remaining if remaining and remaining > 0 else 1.0
+        return MAX_CALL_SECONDS
+    if remaining is None or remaining > MAX_CALL_SECONDS:
+        return MAX_CALL_SECONDS
+    return max(remaining, 1.0)
 
 
 class RadioMcpServicer(pb2_grpc.RadioMcpServiceServicer):
@@ -140,7 +149,14 @@ class RadioMcpServicer(pb2_grpc.RadioMcpServiceServicer):
             return pb2.CallToolResponse(ok=False, error=str(exc.__cause__ or exc))
 
     def ListTools(self, request, context):
-        tools = _run(server.mcp.list_tools(), timeout=_call_timeout(context))
+        try:
+            tools = _run(server.mcp.list_tools(), timeout=_call_timeout(context))
+        except (concurrent.futures.TimeoutError, grpc.RpcError) as exc:
+            context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, f"call timed out: {exc}")
+        except Exception as exc:
+            context.abort(
+                grpc.StatusCode.INTERNAL, f"list tools failed: {exc.__cause__ or exc}"
+            )
         payload = [
             {
                 "name": t.name,

@@ -27,4 +27,4 @@ exclude = ["radio_mcp_pb2.py", "radio_mcp_pb2_grpc.py"]
 ignore = ["BLE001"]
 
 [tool.pytest.ini_options]
-testpaths = ["test_server.py"]
+testpaths = ["."]
