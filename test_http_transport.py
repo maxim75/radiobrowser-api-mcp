@@ -36,7 +36,7 @@ def test_main_dispatches_streamable_http(monkeypatch):
         ["--transport", "streamable-http", "--http-port", "8000", "--path", "/mcp"]
     )
     assert calls["transport"] == "streamable-http"
-    assert calls["port"] == 50052
+    assert calls["port"] == 8000
     assert calls["streamable_http_path"] == "/mcp"
 
 
