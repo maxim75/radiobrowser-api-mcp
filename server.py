@@ -943,7 +943,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1", help="listen host")
     parser.add_argument("--port", type=int, default=50051, help="gRPC listen port")
     parser.add_argument(
-        "--http-port", type=int, default=8000, help="Streamable HTTP listen port"
+        "--http-port", type=int, default=50052, help="Streamable HTTP listen port"
     )
     parser.add_argument(
         "--path", default="/mcp", help="Streamable HTTP endpoint path"
