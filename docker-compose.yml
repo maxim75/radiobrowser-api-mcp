@@ -4,12 +4,18 @@ services:
     image: radiobrowser-api-mcp:latest
     container_name: radiobrowser-api-mcp
     restart: unless-stopped
-    ports:
-      - "50051:50051"
-      - "50052:50052"
+    # No `ports:` — publishing bypasses Coolify's Traefik proxy entirely
+    # (that is what left the app reachable only on plain http://…:50052).
+    # `expose` keeps 50052 reachable on the proxy network so Traefik can
+    # terminate TLS and serve it on 443. Set the domain in Coolify WITH the
+    # container port appended: https://<your-domain>:50052 — the port tells
+    # Traefik where to forward and does NOT appear in the public URL.
+    expose:
+      - "50052"
     environment:
-      # Optional: Bearer token required for the mutating tools
-      # (vote/click/url/add) over gRPC. Set in Coolify env vars.
+      # NOTE: only grpc_server.py reads this, and this container runs the
+      # streamable-http transport — so it currently protects NOTHING.
+      # The /mcp endpoint is unauthenticated, mutating tools included.
       RADIO_MCP_AUTH_TOKEN: ${RADIO_MCP_AUTH_TOKEN:-}
     healthcheck:
       # Streamable HTTP endpoint (Coolify-facing transport): a GET on /mcp
