@@ -13,14 +13,16 @@ Tools:
     get_directory_stats / list_directory_servers
 
 Run:
-    uv run server.py                       # stdio transport (for MCP clients)
-    uv run server.py --transport grpc      # gRPC mode for remote connections
-    uv run server.py --transport grpc --host 0.0.0.0 --port 50051
+    uv run server.py                                  # stdio transport (for MCP clients)
+    uv run server.py --transport streamable-http      # HTTP mode for remote connections
+    uv run server.py --transport streamable-http --host 0.0.0.0 --http-port 50052
 """
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import re
 import time
 import urllib.error
@@ -30,11 +32,13 @@ from concurrent import futures as concurrent_futures
 from dataclasses import asdict, dataclass
 
 try:  # MCP SDK v2.x: FastMCP was renamed to MCPServer
+    from mcp.server.mcpserver import Context
     from mcp.server.mcpserver import MCPServer as _Server
     from mcp.server.mcpserver.exceptions import ToolError
 
     mcp = _Server("radio-now-playing")
 except ImportError:  # MCP SDK v1.x
+    from mcp.server.fastmcp import Context
     from mcp.server.fastmcp import FastMCP as _Server
 
     try:
@@ -45,6 +49,49 @@ except ImportError:  # MCP SDK v1.x
             pass
 
     mcp = _Server("radio-now-playing")
+
+# Tools that mutate the public directory (or submit to it). When the server
+# is started with RADIO_MCP_AUTH_TOKEN set, these require
+# `Authorization: Bearer <token>` over HTTP; read-only tools stay open.
+MUTATING_TOOLS = frozenset(
+    {
+        "register_station_click",
+        "vote_for_station",
+        "resolve_station_stream_url",
+        "add_station",
+    }
+)
+
+
+def _require_mutating_auth(ctx: Context | None, tool_name: str) -> None:
+    """Refuse a mutating tool call when a token is configured but missing/wrong.
+
+    Rules: token unset/empty -> everything open; no HTTP request in context
+    (stdio, direct calls) -> check skipped; otherwise the `Authorization`
+    header must equal `Bearer <token>` (constant-time comparison).
+    """
+    token = os.environ.get("RADIO_MCP_AUTH_TOKEN", "")
+    if not token:
+        return
+    request = None
+    if ctx is not None:
+        try:
+            request = ctx.request_context.request
+        except ValueError:
+            request = None  # no active request (stdio / direct call): skip
+    if request is None:
+        return
+    header = request.headers.get("authorization", "")
+    if not header:
+        raise ToolError(
+            f"tool {tool_name!r} requires a valid auth token "
+            "(missing Authorization: Bearer <token> header)"
+        )
+    if not hmac.compare_digest(header, f"Bearer {token}"):
+        raise ToolError(
+            f"tool {tool_name!r} requires a valid auth token (invalid token)"
+        )
+
 
 RADIO_BROWSER_HOSTS = [
     "https://de1.api.radio-browser.info",
@@ -815,23 +862,32 @@ def get_station_check_history(
 
 
 @mcp.tool()
-def register_station_click(station_uuid: str, timeout: int = 15) -> dict:
+def register_station_click(
+    station_uuid: str, timeout: int = 15, ctx: Context | None = None
+) -> dict:
     """Register a click (listen) for a station (GET /json/click/{uuid}).
 
     NOTE: increments the station's public click counter. Returns the station record.
     """
+    _require_mutating_auth(ctx, "register_station_click")
     return _api_get(f"json/click/{_quote(_require_uuid(station_uuid))}", None, timeout)
 
 
 @mcp.tool()
-def vote_for_station(station_uuid: str, timeout: int = 15) -> dict:
+def vote_for_station(
+    station_uuid: str, timeout: int = 15, ctx: Context | None = None
+) -> dict:
     """Vote for a station (GET /json/vote/{uuid}). NOTE: increments the public vote counter."""
+    _require_mutating_auth(ctx, "vote_for_station")
     return _api_get(f"json/vote/{_quote(_require_uuid(station_uuid))}", None, timeout)
 
 
 @mcp.tool()
-def resolve_station_stream_url(station_uuid: str, timeout: int = 15) -> dict:
+def resolve_station_stream_url(
+    station_uuid: str, timeout: int = 15, ctx: Context | None = None
+) -> dict:
     """Get the current stream URL for a station (GET /json/url/{uuid}). Also counts as a click."""
+    _require_mutating_auth(ctx, "resolve_station_stream_url")
     return _api_get(f"json/url/{_quote(_require_uuid(station_uuid))}", None, timeout)
 
 
@@ -846,8 +902,10 @@ def add_station(
     language: str = "",
     tags: str = "",
     timeout: int = 15,
+    ctx: Context | None = None,
 ) -> dict:
     """Submit a new station to the directory (POST /json/add). Only name + url are required."""
+    _require_mutating_auth(ctx, "add_station")
     if not name or not url:
         raise ToolError("name and url are required")
     payload = _api_post(
@@ -933,33 +991,29 @@ def list_directory_servers(timeout: int = 15) -> list[dict]:
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
+    # HOST/PORT env vars supply the defaults so Coolify can inject them;
+    # an explicit flag always wins over the environment.
+    default_host = os.environ.get("HOST", "127.0.0.1")
+    default_http_port = int(os.environ.get("PORT", "50052"))
+
     parser = argparse.ArgumentParser(description="radiobrowser-api-mcp server")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "grpc", "streamable-http"],
+        choices=["stdio", "streamable-http"],
         default="stdio",
-        help="stdio for local MCP clients, grpc or streamable-http for remote connections",
+        help="stdio for local MCP clients, streamable-http for remote connections",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="listen host")
-    parser.add_argument("--port", type=int, default=50051, help="gRPC listen port")
+    parser.add_argument("--host", default=default_host, help="listen host")
     parser.add_argument(
-        "--http-port", type=int, default=50052, help="Streamable HTTP listen port"
-    )
-    parser.add_argument(
-        "--path", default="/mcp", help="Streamable HTTP endpoint path"
+        "--http-port", type=int, default=default_http_port, help="HTTP listen port"
     )
     args = parser.parse_args(argv)
-    if args.transport == "grpc":
-        from grpc_server import serve
+    if args.transport == "streamable-http":
+        import uvicorn
 
-        serve(args.host, args.port)
-    elif args.transport == "streamable-http":
-        mcp.run(
-            transport="streamable-http",
-            host=args.host,
-            port=args.http_port,
-            streamable_http_path=args.path,
-        )
+        from app import create_app
+
+        uvicorn.run(create_app(host=args.host), host=args.host, port=args.http_port)
     else:
         mcp.run()
 

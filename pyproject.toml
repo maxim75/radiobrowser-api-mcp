@@ -1,29 +1,25 @@
 [project]
 name = "radiobrowser-api-mcp"
 version = "0.1.0"
-description = "MCP server for the Radio Browser directory API plus live ICY/Shoutcast now-playing metadata, with gRPC remote mode"
+description = "MCP server for the Radio Browser directory API plus live ICY/Shoutcast now-playing metadata, with Streamable HTTP remote mode"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "grpcio>=1.83.1",
     "mcp>=2.1.1",
-    "protobuf>=7.0.0",
 ]
 
 [dependency-groups]
 dev = [
-    "grpcio-tools>=1.83.1",
     "pytest>=9.1.1",
     "ruff>=0.16.6",
 ]
 
 [tool.ruff]
 target-version = "py312"
-exclude = ["radio_mcp_pb2.py", "radio_mcp_pb2_grpc.py"]
 
 [tool.ruff.lint]
 # BLE (blind except) is intentional: mirror failover must survive any
-# network error; the gRPC bridge must serialize any tool failure in-band.
+# network error.
 ignore = ["BLE001"]
 
 [tool.pytest.ini_options]
