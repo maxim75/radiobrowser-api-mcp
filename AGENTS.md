@@ -5,31 +5,30 @@ Radio Browser directory API plus live ICY/Shoutcast "now playing" metadata.
 
 ## Layout
 
-- `server.py` — all 29 MCP tools. Single source of truth; `mcp` object + `_api_get`/`_api_post` helpers + `KNOWN_STATIONS` curated fallbacks.
-- `grpc_server.py` — generic JSON bridge (`CallTool`/`ListTools`) over the same tools. Needs no changes when tools are added.
-- `radio_mcp.proto` + generated `radio_mcp_pb2*.py` — gRPC contract.
+- `server.py` — all 29 MCP tools. Single source of truth; `mcp` object + `_api_get`/`_api_post` helpers + `KNOWN_STATIONS` curated fallbacks + `MUTATING_TOOLS` + `_require_mutating_auth`.
+- `app.py` — ASGI app (`create_app(host)`): Streamable HTTP at `/mcp`, legacy SSE at `/sse`+`/messages`, open `/health` and `/`.
+- `test_server.py` — network-free unit tests for `get_now_playing` semantics.
+- `test_http_transport.py` — transport tests: routes, CLI, uvicorn dispatch, auth matrix driven off `MUTATING_TOOLS`.
 - `main.py` — leftover `uv init` template, irrelevant.
-- No tests, lint, typecheck, or CI. Verify with `py_compile` + live smoke tests.
 
 ## Commands
 
 ```sh
-uv run server.py                                # stdio (default)
-uv run server.py --transport grpc --port 50051  # remote mode
-uv run python -m py_compile server.py grpc_server.py   # verify
+uv run server.py                                             # stdio (default)
+uv run server.py --transport streamable-http --http-port 50052  # remote mode
+uv run python -m py_compile server.py app.py                 # verify
+uv run pytest -q && uv run ruff check .                      # test + lint before pushing
 uv run python -c "import asyncio, server; ..."  # smoke test via server.mcp.call_tool(...)
 ```
 
 - Runtime is Python 3.12 (`.python-version`); system python is 3.14 — always use `uv run`.
 - After editing `pyproject.toml` by hand, run `uv lock`.
-- Regenerate protobuf stubs only when `radio_mcp.proto` changes:
-  `uv run python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. radio_mcp.proto`
-  (`grpcio-tools` is a dev-only dep; `grpcio` is runtime.)
+- Dev deps (`pytest`, `ruff`) live in the `dev` dependency group — `uv sync --group dev` (or `uv run pytest` resolves them); the Docker image installs runtime only.
 
 ## MCP SDK v2 quirks
 
 - Installed SDK is `mcp>=2.1.1`: import is `mcp.server.mcpserver.MCPServer` (`FastMCP` was renamed). `server.py` already has a v1/v2 compat shim — keep it.
-- Tool results arrive as a list of content blocks (one `TextContent` per item, single dicts wrapped in one block). Any test/parsing helper must handle that; `grpc_server._serialize_content` already does.
+- Tool results arrive as a list of content blocks (one `TextContent` per item, single dicts wrapped in one block). Any test/parsing helper must handle that.
 - Inspector: run `npx @modelcontextprotocol/inspector` and open the full terminal URL including `?MCP_PROXY_AUTH_TOKEN=...` — bare `localhost:6274` returns "Unauthorized".
 
 ## Radio Browser API (verified by live probing, not docs)
@@ -51,7 +50,7 @@ uv run python -c "import asyncio, server; ..."  # smoke test via server.mcp.call
 
 ## Error surfacing (MCP SDK v2)
 
-- SDK wraps non-`ToolError` exceptions in `UnexpectedToolError` whose message is only `Error executing tool <name>`; detail survives in `__cause__`. Anticipated failures must raise `ToolError` (import under the v1/v2 shim). `grpc_server` unwraps `str(exc.__cause__ or exc)` for the same reason.
+- SDK wraps non-`ToolError` exceptions in `UnexpectedToolError` whose message is only `Error executing tool <name>`; detail survives in `__cause__`. Anticipated failures must raise `ToolError` (import under the v1/v2 shim).
 - `get_now_playing` semantics: ranked curated fallback (>= 2 keyword overlap) + same-station loop gate (>= 2 `_station_tokens` overlap, parens stripped) + direct-streams-first sort (non-HLS scores higher under `reverse=True`). `test_server.py` pins all three — run `uv run pytest -q` and `uv run ruff check .` before pushing.
 
 ## Client config gotcha (macOS GUI clients)

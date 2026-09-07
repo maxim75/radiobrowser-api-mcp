@@ -62,104 +62,81 @@ Facets & meta: `list_countries`, `list_country_codes`, `list_codecs`,
 ## Run
 
 ```sh
-uv run server.py                                # stdio transport (default)
-uv run server.py --transport grpc --port 50051  # gRPC for remote connections
+uv run server.py                                  # stdio transport (default)
+uv run server.py --transport streamable-http --http-port 50052  # HTTP for remote connections
 ```
 
-gRPC exposes all 29 tools via `CallTool(name, arguments_json)` /
-`ListTools()` — see `radio_mcp.proto`. The bridge is a generic JSON
-pass-through, so new MCP tools need no gRPC-side changes. `CallTool` results
-are wrapped in an explicit envelope `{"items": [...], "count": N}` so clients
-can tell an object result apart from a one-item list. Regenerate stubs
-only when the `.proto` changes:
+The HTTP mode serves Streamable HTTP at `/mcp` (current standard) plus the
+legacy SSE transport at `/sse` (posts to `/messages/`), with open `/health`
+and `/` endpoints. `HOST`/`PORT` env vars supply the `--host`/`--http-port`
+defaults.
 
-```sh
-uv run python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. radio_mcp.proto
-```
-
-### gRPC auth (remote deployments)
+### HTTP auth (remote deployments)
 
 `register_station_click`, `vote_for_station`, `resolve_station_stream_url`
 and `add_station` mutate the public directory. When `RADIO_MCP_AUTH_TOKEN`
-is set, calls to these tools must carry
-`authorization: Bearer <token>` gRPC metadata; read-only tools stay open.
+is set, calls to these tools must carry an
+`Authorization: Bearer <token>` HTTP header; read-only tools stay open.
 Unset (default) means everything is open — fine for localhost, not for the
-internet.
+internet. Over stdio (local use) the check is skipped.
 
 ## Deploy (Docker / Coolify)
 
-The image runs the server in gRPC mode on port 50051. Coolify accepts a
+The image runs the server in Streamable HTTP mode on port 50052. Coolify accepts a
 plain `docker-compose.yml`, so deployment is: new Resource → Docker Compose →
 point it at this repo.
 
 ```sh
-docker network create coolify   # one-time, local only (see note below)
 docker compose up -d --build
 ```
 
-The compose file joins the `coolify` proxy network so Traefik can reach the
-container; declaring it external means a local run needs that network to
-exist, hence the one-time `docker network create`. On the server Coolify
-already provides it.
-
-- No host port is published. The container only `expose`s 50051 on the
-  proxy network, so Traefik reaches it and the internet does not.
+- No host port is published. The container only `expose`s 50052 on the
+  project network, so Traefik reaches it and the internet does not.
+- Plain HTTP means Coolify's generated Traefik labels work unmodified:
+  re-enable "Generate default labels" in Coolify and set the domain on port
+  50052.
 - For remote/Coolify deployments, set `RADIO_MCP_AUTH_TOKEN` (Coolify env
-  vars) so the mutating tools require a Bearer token (see gRPC auth above).
-- The image installs runtime deps only (`uv sync --frozen --no-dev`) and
-  ships pre-generated protobuf stubs, so no build tools are needed at deploy.
-- The server itself speaks plaintext gRPC. TLS is terminated by Traefik; do
-  not publish port 50051 to the internet directly.
-
-### Traefik / h2c (required)
-
-gRPC is HTTP/2. Traefik's default backend scheme is `http`, which downgrades
-the connection to HTTP/1.1 and makes every gRPC call fail while the container
-still reports healthy. `docker-compose.yml` ships explicit Traefik labels that
-set `loadbalancer.server.scheme=h2c`.
-
-Three things about those labels are easy to get wrong:
-
-- **`MCP_DOMAIN` needs Coolify's label escaping turned off.** By default
-  Coolify rewrites `$` to `$$`, which delivers `${MCP_DOMAIN}` to the container
-  as a literal string; Traefik then rejects the router outright
-  (`is not a valid hostname`) and repeatedly fails ACME orders for it. Uncheck
-  **"Escape special characters in labels"** in the resource's **Container
-  Labels** section, and set `MCP_DOMAIN` in its env vars.
-- **The container must join the `coolify` network.** `traefik.docker.network`
-  only tells Traefik which network to read the backend IP from — it does not
-  attach the container. Coolify attaches the proxy network on its own only
-  when a domain is set in its UI, which this setup deliberately leaves empty.
-- **Use a dedicated subdomain**, e.g. `radiobrowser-api-mcp.d.imaxim.org` —
-  not the hostname that serves the Coolify dashboard, since two routers on one
-  host compete. Traefik issues the certificate via `letsencrypt`.
+  vars) so the mutating tools require a Bearer token (see HTTP auth above).
+- The image installs runtime deps only (`uv sync --frozen --no-dev`).
+- The server itself speaks plaintext HTTP. TLS is terminated by Traefik; do
+  not publish port 50052 to the internet directly.
+- `/health` is the liveness probe (Coolify healthcheck and Docker
+  `HEALTHCHECK`); it never touches the upstream Radio Browser API, so an
+  upstream outage does not restart a healthy container.
 
 To deploy on Coolify:
 
-1. Set `MCP_DOMAIN` and `RADIO_MCP_AUTH_TOKEN` in the resource's env vars —
+1. Set `RADIO_MCP_AUTH_TOKEN` in the resource's env vars —
    without the token the mutating tools are open to anyone who can reach the
    endpoint.
-2. In the **Container Labels** section, uncheck "Escape special characters in
-   labels" so `MCP_DOMAIN` interpolates.
+2. Re-enable "Generate default labels" and set the domain on port 50052.
 
-   Coolify's generated labels can stay on: they create a competing router for
-   the same host using the default `http` scheme, but this router carries
-   `priority=1000` and wins. Traefik otherwise ranks by rule length, and the
-   generated `Host(x) && PathPrefix(/)` is longer than `Host(x)`.
-3. Deploy, then confirm the rule label resolved on the server:
-
-   ```sh
-   docker inspect <container> --format \
-     '{{index .Config.Labels "traefik.http.routers.radiobrowser-mcp.rule"}}'
-   ```
-
-   It must print the real hostname, not a literal `${MCP_DOMAIN}`.
-
-Then test with a gRPC client over TLS on 443, no port suffix:
+Then test:
 
 ```sh
-grpcurl radiobrowser-api-mcp.d.imaxim.org:443 radiomcp.RadioMcpService/ListTools
+curl -sf https://<domain>/health
 ```
+
+and connect an MCP client to `https://<domain>/mcp`.
+
+### Client configuration
+
+opencode, and any other MCP client supporting remote servers:
+
+```json
+{
+  "mcp": {
+    "radio-browser": {
+      "type": "remote",
+      "url": "https://radiobrowser-api-mcp.d.imaxim.org/mcp",
+      "enabled": true,
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+The header is only needed to call the four mutating tools; reads work without it.
 
 ## Client config (example)
 
